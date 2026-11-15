@@ -55,7 +55,9 @@ FAN_RPMS = ["supply_fan_rpm", "extract_fan_rpm"]
 FAN_POWERS = ["supply_fan_power", "extract_fan_power"]
 # Raw codes whose meaning is not documented yet; kept as diagnostics to learn them.
 RAW_CODES = ["operating_mode", "unit_state"]
-STATES = ["fireplace", "running", "bypass", "boost", "defrosting", "freeze_protection"]
+# starting_up: the unit's start-up minute after switching on (0x73 p[4] 0x00 while running and not in
+# fireplace mode), in which it drops speed and fireplace commands. Checked on an ILTO 440 econo.
+STATES = ["fireplace", "running", "starting_up", "bypass", "boost", "defrosting", "freeze_protection"]
 PROBLEMS = ["filter_alarm", "service_reminder", "fan_failure", "emergency_stop"]
 
 SCHEMA = {

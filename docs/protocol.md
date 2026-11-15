@@ -87,7 +87,7 @@ which of the following fields the unit takes; the panel fills the others with cu
 |---|---|
 | `20 00 0C 01 00 01 <s> 01 01 00` | Fan speed. `<s>` = speed × 20 %: 14, 28, 3C, 50, 64 for speeds 1-5 |
 | `20 00 10 <same fields>` | Switch the unit off (fans stop) |
-| `20 00 20 <same fields>` | Switch it on again; it resumes the speed it had (the speed byte is ignored) |
+| `20 00 20 <same fields>` | Switch it on again. It comes back at speed 3, not the speed it had (the speed byte is ignored). It then has a start-up minute (0x73 p[4] = 0x00, ~62 s) in which speed and fireplace commands are acknowledged but dropped; the component holds a choice made while off or in that minute and sends it when p[4] turns 0x01 |
 | `20 00 05 <m> 00 00 3C 00 00 00` | Sent instead of the speed command when the panel's basic display is the 3-step Away / Home / Boost layout: `<m>` 00 Away, 01 Home, 02 Boost. The unit maps each step to one of the 5 speeds (on the tested unit: 20 %, 60 %, 100 %) |
 | `30 00 10 00 00 00 00 02` / `... 01` | Fireplace mode on / off (supply 100 %, extract 20 % for ~10 min) |
 | `54 00 0E <wd> <h> <min> <s>` | Set the clock. `<wd>` weekday with **Monday = 0**, then hour, minute, second |
@@ -119,13 +119,13 @@ Checked against the panel's service screens on the tested unit.
 | p[1] | 0x01 fireplace mode (confirmed). openHAB: 0x02 underpressure compensation, 0x04 external boost, 0x08 humidity boost, 0x10 CO2 boost, 0x20 defrosting |
 | p[2] | 0x04 while the fans run, 0x00 when stopped |
 | p[3] | openHAB: 0x04 external boost function, 0x08 external fireplace, 0x10 filter guard, 0x20 IR freeze protection, 0x80 emergency stop |
-| p[4] | 0x01 normally, 0x21 with the 3-step display, 0x00 for about a minute after fireplace mode or off/on. During that start-up phase the unit stores a new speed at once (p[17]) but the fans keep the start speed until it ends (seen: ~40 s) |
+| p[4] | 0x01 normally, 0x21 with the 3-step display, 0x00 while switched off, during fireplace mode, and for ~62 s after switching on (the start-up minute: speed and fireplace commands are acknowledged but dropped, p[17] stays 3) |
 | p[7] | openHAB: alarms - 0x08 supply fan failure, 0x10 extract fan failure, ... |
 | p[8] | 0x00 / 0x40 / 0xC0, changes around off/on (unknown). openHAB: 0x02 filter guard alarm, 0x04 service reminder |
 | p[9], p[14], p[15], p[18] | Follow the display layout and the current Away / Home / Boost step |
 | p[12], p[13] | Supply / extract fan power, % |
 | p[16] | 0x10 constant |
-| p[17] | Selected speed × 20 % |
+| p[17] | Selected speed × 20 %. While switched off it keeps the old speed; the first status after switching on already shows 0x3C (speed 3) |
 | p[19] | 1 while the unit is switched off |
 | p[20] | 0x07 running; 0x03 then 0x04 while switching off |
 

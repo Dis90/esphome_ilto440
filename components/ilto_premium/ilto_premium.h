@@ -40,7 +40,8 @@
 //
 //   20 00 0C 01 00 01 <speed x 20 %> 01 01 00     set fan speed (unit acks 20 00 0C)
 //   20 00 10 <as the speed command>              switch the unit off (unit acks 20 00 10)
-//   20 00 20 <as the speed command>              switch it back on (unit acks 20 00 20)
+//   20 00 20 <as the speed command>              switch it back on (unit acks 20 00 20); it comes
+//                                                back at speed 3 whatever it ran at before
 //   30 00 10 00 00 00 00 <02 start | 01 stop>     fireplace mode (unit acks 30 00 10)
 //   54 00 0E <weekday> <h> <min> <s>              set the clock (unit acks 54 00 0E)
 //   54 00 01 <weekday> <h> <min> <s>              set the weekday, Monday = 0 (acks 54 00 01)
@@ -53,12 +54,14 @@
 // 0x73 payload bytes seen on an ILTO 440 econo (p = after "73 00 FF"):
 //   p[1] & 0x01  fireplace mode on
 //   p[2]         0x04 while the fans run, 0x00 when stopped
-//   p[4]         0x01 normally, 0x21 with the 3-step screen, 0x00 for about a minute after
-//                fireplace mode or an off/on
+//   p[4]         0x01 normally, 0x21 with the 3-step screen, 0x00 while switched off, during
+//                fireplace mode, and for ~62 s after switching on (the start-up minute, in which
+//                speed and fireplace commands are acknowledged but dropped)
 //   p[8]         0x00 / 0x40 / 0xC0, changes around off/on (meaning unknown)
 //   p[9], p[14], p[15], p[18]  follow the panel's screen type and the current 3-step mode
 //   p[12], p[13] supply / extract fan power, %
-//   p[17]        selected speed x 20 %
+//   p[17]        selected speed x 20 %; while switched off it keeps the old speed, but the first
+//                status after switching on already shows speed 3 (0x3C)
 //   p[19]        1 while the unit is switched off
 //   p[20]        0x07 running, 0x03 then 0x04 while switching off
 //   p[0] (0x40) and p[16] (0x10) never changed. The other bits below are openHAB's, unchecked.
@@ -129,6 +132,8 @@ class IltoPremium : public Component, public uart::UARTDevice {
   // if needed, and ends fireplace mode before a speed is set (whether a speed command alone ends
   // it was never tested). Steps the unit is already in are skipped.
   void set_mode(size_t mode) {
+    // A new choice replaces one still waiting for the unit's start-up to end.
+    this->deferred_mode_ = MODE_OFF;
     // running_ / fireplace_ take the target as soon as a command is queued, so a second choice made
     // before the unit's next status builds on the first.
     if (mode == MODE_OFF) {
@@ -137,8 +142,18 @@ class IltoPremium : public Component, public uart::UARTDevice {
       this->running_ = 0;
       return;
     }
-    if (this->running_ != 1)
-      this->set_power(true);
+    // Switching on selects speed 3 and starts a minute in which the unit acknowledges speed and
+    // fireplace commands but drops them (2026-11-15). So a choice made while the unit is off or in
+    // that minute waits until a status shows the start-up has ended (see apply_deferred_()).
+    if (this->running_ != 1 || this->starting_up_) {
+      if (this->running_ != 1)
+        this->set_power(true);
+      this->running_ = 1;
+      this->starting_up_ = true;
+      this->deferred_mode_ = mode;
+      this->deferred_tries_ = 0;
+      return;
+    }
     this->running_ = 1;
     if (mode == MODE_FIREPLACE) {
       if (this->fireplace_ != 1)
@@ -152,6 +167,7 @@ class IltoPremium : public Component, public uart::UARTDevice {
     this->set_fan_speed(mode);
   }
   SUB_BINARY_SENSOR(running)
+  SUB_BINARY_SENSOR(starting_up)
   SUB_BINARY_SENSOR(bypass)
   SUB_BINARY_SENSOR(boost)
   SUB_BINARY_SENSOR(defrosting)
@@ -286,6 +302,12 @@ class IltoPremium : public Component, public uart::UARTDevice {
   // The selected speed from the last 0x73 status, 0 while unknown: before the first status, and
   // with the panel's 3-step (Away / Home / Boost) layout, where p[17] is not what the fans run at.
   int reported_speed_{0};
+  // The unit is in its start-up minute after switching on (0x73 p[4] 0x00 while running and not in
+  // fireplace mode). A speed or Fireplace chosen while off or in that minute waits in
+  // deferred_mode_ (MODE_OFF: nothing waiting); deferred_tries_ counts the commands sent for it.
+  bool starting_up_{false};
+  size_t deferred_mode_{MODE_OFF};
+  uint8_t deferred_tries_{0};
 
   // Is a command of this type (and select byte, unless -1) queued or waiting for its ack?
   bool command_waiting_(uint8_t type, int select = -1) const {
@@ -416,6 +438,10 @@ class IltoPremium : public Component, public uart::UARTDevice {
       this->reported_speed_ = 0;
     if (this->buf_[1] == 0x4A && type == 0x20 && this->buf_[9] == 0x0C && n + 3 == this->speed_command_.size())
       this->speed_command_.assign(this->buf_ + 7, this->buf_ + 7 + n + 3);
+    // A speed / power command from the panel replaces a choice still waiting. (Our own frames are
+    // never heard: the transceiver's receiver is off while it sends.)
+    if (this->buf_[1] == 0x4A && type == 0x20)
+      this->deferred_mode_ = MODE_OFF;
 
     switch (type) {
       case 0x21:
@@ -466,6 +492,12 @@ class IltoPremium : public Component, public uart::UARTDevice {
             this->published_mode_ = mode;
             this->mode_select_->publish_state(mode);
           }
+          const bool starting_up = p[19] == 0 && p[4] == 0x00 && !(p[1] & 0x01);
+          publish_(this->starting_up_binary_sensor_, starting_up);
+          if (!this->command_waiting_(0x20, 0x20))
+            this->starting_up_ = starting_up;
+          if (this->deferred_mode_ != MODE_OFF)
+            this->apply_deferred_(p);
         }
         if (n >= 9) {
           publish_(this->bypass_binary_sensor_, p[0] & 0x04);
@@ -481,6 +513,46 @@ class IltoPremium : public Component, public uart::UARTDevice {
           publish_(this->service_reminder_binary_sensor_, p[8] & 0x04);
         }
         break;
+    }
+  }
+
+  // With each 0x73 status while a choice waits (see set_mode()): once the unit has acknowledged
+  // "on" and its start-up has ended, start fireplace mode or set the speed, check the next status,
+  // and try once more if the unit did not take it. Measured 2026-11-15 on the econo: the first
+  // status after "on" shows speed 3 and p[4] 0x00; p[4] turns 0x01 about 62 s later, and a speed
+  // sent then is shown within 2 s.
+  void apply_deferred_(const uint8_t *p) {
+    if (this->command_waiting_(0x20, 0x20) || p[19] != 0 || this->starting_up_)
+      return;
+    if (p[4] & 0x20) {
+      this->deferred_mode_ = MODE_OFF;  // 3-step screen: the speeds mean nothing there
+      return;
+    }
+    const bool fireplace = this->deferred_mode_ == MODE_FIREPLACE;
+    const int speed = p[17] / 20;
+    if (fireplace ? (p[1] & 0x01) != 0 : speed == int(this->deferred_mode_)) {
+      ESP_LOGI(TAG, "Unit is now in the chosen mode (%s)", fireplace ? "Fireplace" : "speed");
+      this->deferred_mode_ = MODE_OFF;
+      return;
+    }
+    if (this->command_waiting_(0x20, 0x0C) || this->command_waiting_(0x30))
+      return;
+    if (this->deferred_tries_ >= 2) {
+      ESP_LOGW(TAG, "Unit did not take the chosen mode after %u tries; it runs at speed %d",
+               (unsigned) this->deferred_tries_, speed);
+      this->deferred_mode_ = MODE_OFF;
+      return;
+    }
+    this->deferred_tries_++;
+    if (fireplace) {
+      ESP_LOGI(TAG, "Start-up over; starting fireplace mode");
+      this->set_fireplace(true);
+      this->fireplace_ = 1;
+    } else {
+      ESP_LOGI(TAG, "Start-up over at speed %d; setting speed %d", speed, int(this->deferred_mode_));
+      std::vector<uint8_t> data = this->speed_command_;
+      data[6] = uint8_t(this->deferred_mode_ * 20);
+      this->queue_(std::move(data));
     }
   }
 
