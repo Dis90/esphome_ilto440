@@ -697,11 +697,16 @@ class IltoPremium : public Component, public uart::UARTDevice {
       }
       // The unit's ack to the panel: 20 00 81 01 <step> <fan %>, or 20 00 10 01 / 20 00 20 01 for
       // off / on.
-      const bool ack_matches = select == 0x81 ? n >= 2 && p[1] == this->pending_[3] : n >= 1;
-      if (this->awaiting_ack_ && src == 0x0A && dst == 0x01 && type == this->pending_[0] && select == this->pending_[2] &&
-          ack_matches) {
+      // pending_ is read only while a sent command waits for its ack (it holds that command then), and
+      // its length is checked before each byte beyond the type and select.
+      if (this->awaiting_ack_ && this->pending_.size() >= 3 && src == 0x0A && dst == 0x01 &&
+          type == this->pending_[0] && select == this->pending_[2] &&
+          (select == 0x81 ? n >= 2 && this->pending_.size() >= 4 && p[1] == this->pending_[3] : n >= 1)) {
         ESP_LOGI(TAG, "Unit acknowledged %s", format_hex_pretty(this->pending_).c_str());
-        this->boost_minutes_ = this->pending_[3] == 0x02 ? this->pending_[10] : 0;
+        // Only the 3-step command (20 00 81 <step> ... <minutes>) sets the boost length; a clock
+        // command's 4th byte is the weekday, so it must not be read as a step.
+        if (this->pending_[0] == 0x20 && this->pending_[2] == 0x81 && this->pending_.size() >= 11)
+          this->boost_minutes_ = this->pending_[3] == 0x02 ? this->pending_[10] : 0;
         this->pending_.clear();
         this->awaiting_ack_ = false;
       }
