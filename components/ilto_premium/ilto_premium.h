@@ -55,8 +55,9 @@
 //   p[1] & 0x01  fireplace mode on
 //   p[2]         0x04 while the fans run, 0x00 when stopped
 //   p[4]         0x01 normally, 0x21 with the 3-step screen, 0x00 while switched off, during
-//                fireplace mode, and for ~62 s after switching on (the start-up minute, in which
-//                speed and fireplace commands are acknowledged but dropped)
+//                fireplace mode, and for ~62 s after switching on (the start-up minute). Speed
+//                and fireplace commands sent ~1 s after "on" were acknowledged but dropped; a
+//                speed sent 41 s in was stored (p[17]) and the fans followed when it ended
 //   p[8]         0x00 / 0x40 / 0xC0, changes around off/on (meaning unknown)
 //   p[9], p[14], p[15], p[18]  follow the panel's screen type and the current 3-step mode
 //   p[12], p[13] supply / extract fan power, %
@@ -143,8 +144,9 @@ class IltoPremium : public Component, public uart::UARTDevice {
       return;
     }
     // Switching on selects speed 3 and starts a minute in which the unit acknowledges speed and
-    // fireplace commands but drops them (2026-11-15). So a choice made while the unit is off or in
-    // that minute waits until a status shows the start-up has ended (see apply_deferred_()).
+    // fireplace commands but does not reliably take them (dropped ~1 s after "on", 2026-11-15). So
+    // a choice made while the unit is off or in that minute waits until a status shows the start-up
+    // has ended (see apply_deferred_()).
     if (this->running_ != 1 || this->starting_up_) {
       if (this->running_ != 1)
         this->set_power(true);
@@ -152,6 +154,7 @@ class IltoPremium : public Component, public uart::UARTDevice {
       this->starting_up_ = true;
       this->deferred_mode_ = mode;
       this->deferred_tries_ = 0;
+      this->deferred_since_ = millis();
       return;
     }
     this->running_ = 1;
@@ -238,6 +241,12 @@ class IltoPremium : public Component, public uart::UARTDevice {
         if (this->attempts_ >= MAX_ATTEMPTS) {
           ESP_LOGW(TAG, "No acknowledgement for %s after %u tries, giving up",
                    format_hex_pretty(this->pending_).c_str(), (unsigned) this->attempts_);
+          // The unit never took "on": a choice held for after it must not wait for some later start.
+          if (this->pending_.size() > 2 && this->pending_[0] == 0x20 && this->pending_[2] == 0x20 &&
+              this->deferred_mode_ != MODE_OFF) {
+            ESP_LOGW(TAG, "Unit was not switched on; the chosen mode is dropped");
+            this->deferred_mode_ = MODE_OFF;
+          }
           this->pending_.clear();
         }
       }
@@ -270,6 +279,9 @@ class IltoPremium : public Component, public uart::UARTDevice {
   static constexpr uint32_t QUIET_MS = 30;         // bus idle this long before sending
   static constexpr uint32_t ACK_TIMEOUT_MS = 500;  // resend after this without an ack
   static constexpr uint8_t MAX_ATTEMPTS = 3;
+  // A held choice is sent anyway when the unit still reports its start-up this long after the
+  // choice (the start-up takes ~62 s), so an unknown state with p[4] 0x00 cannot block it for good.
+  static constexpr uint32_t DEFERRED_MAX_MS = 180000;
 
   uint8_t buf_[HEADER_LEN + MAX_LEN + 2];
   size_t pos_{0};
@@ -308,6 +320,7 @@ class IltoPremium : public Component, public uart::UARTDevice {
   bool starting_up_{false};
   size_t deferred_mode_{MODE_OFF};
   uint8_t deferred_tries_{0};
+  uint32_t deferred_since_{0};  // millis() of the choice, or of the last try sent during a start-up
 
   // Is a command of this type (and select byte, unless -1) queued or waiting for its ack?
   bool command_waiting_(uint8_t type, int select = -1) const {
@@ -520,9 +533,23 @@ class IltoPremium : public Component, public uart::UARTDevice {
   // "on" and its start-up has ended, start fireplace mode or set the speed, check the next status,
   // and try once more if the unit did not take it. Measured 2026-11-15 on the econo: the first
   // status after "on" shows speed 3 and p[4] 0x00; p[4] turns 0x01 about 62 s later, and a speed
-  // sent then is shown within 2 s.
+  // sent then is shown within 2 s. If the start-up is still reported DEFERRED_MAX_MS after the
+  // choice, the command is sent anyway (and once more that long after).
   void apply_deferred_(const uint8_t *p) {
-    if (this->command_waiting_(0x20, 0x20) || p[19] != 0 || this->starting_up_)
+    if (this->command_waiting_(0x20, 0x20))
+      return;
+    const uint32_t now = millis();
+    const bool overdue = now - this->deferred_since_ >= DEFERRED_MAX_MS;
+    if (p[19] != 0) {
+      // Still off with no "on" waiting: a status from just before the ack, or something else
+      // switched the unit off again. Don't keep the choice for a later start.
+      if (overdue) {
+        ESP_LOGW(TAG, "Unit is still off; the chosen mode is dropped");
+        this->deferred_mode_ = MODE_OFF;
+      }
+      return;
+    }
+    if (this->starting_up_ && !overdue)
       return;
     if (p[4] & 0x20) {
       this->deferred_mode_ = MODE_OFF;  // 3-step screen: the speeds mean nothing there
@@ -544,12 +571,17 @@ class IltoPremium : public Component, public uart::UARTDevice {
       return;
     }
     this->deferred_tries_++;
+    if (this->starting_up_) {
+      ESP_LOGW(TAG, "Unit still reports its start-up after %u s; sending the chosen mode anyway",
+               (unsigned) ((now - this->deferred_since_) / 1000));
+      this->deferred_since_ = now;
+    }
     if (fireplace) {
-      ESP_LOGI(TAG, "Start-up over; starting fireplace mode");
+      ESP_LOGI(TAG, "Starting fireplace mode");
       this->set_fireplace(true);
       this->fireplace_ = 1;
     } else {
-      ESP_LOGI(TAG, "Start-up over at speed %d; setting speed %d", speed, int(this->deferred_mode_));
+      ESP_LOGI(TAG, "Unit runs at speed %d; setting speed %d", speed, int(this->deferred_mode_));
       std::vector<uint8_t> data = this->speed_command_;
       data[6] = uint8_t(this->deferred_mode_ * 20);
       this->queue_(std::move(data));

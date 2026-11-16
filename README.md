@@ -169,7 +169,7 @@ id(ilto).set_clock(weekday, hour, minute, second);  // weekday: Monday = 0
 | Supply fan power, Extract fan power | sensor, % | 0 when the unit is off |
 | CO2, Humidity | sensor | Only with those options; scale unchecked |
 | Supply fan rpm, Extract fan rpm | sensor | Not reported by econo models |
-| Ventilation | select | Off, 1-5 or Fireplace: the unit's state, and how to change it. Switching on always starts at speed 3 and is followed by a start-up minute in which the unit ignores speed and fireplace commands; a choice made while off or during that minute is sent when it ends, so the select shows 3 until then. Fireplace runs supply 100 %, extract 20 % for ~10 min to start a fire, then the unit returns to its speed |
+| Ventilation | select | Off, 1-5 or Fireplace: the unit's state, and how to change it. Switching on always starts at speed 3 and is followed by a start-up minute in which the unit does not reliably take speed and fireplace commands; a choice made while off or during that minute is sent when it ends, so the select shows 3 until then. Fireplace runs supply 100 %, extract 20 % for ~10 min to start a fire, then the unit returns to its speed |
 | Starting up | binary sensor | Optional (add `starting_up:` with a name under `ilto_premium:`). On during that start-up minute, about 62 s on the tested econo |
 | Clock sync | switch (config) | On by default: set the unit's clock after boot and at 04:05 daily |
 | Sync clock now | button (config) | |
