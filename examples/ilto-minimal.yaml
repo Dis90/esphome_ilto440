@@ -38,3 +38,8 @@ ilto_premium:
   humidity: !remove
   supply_fan_rpm: !remove
   extract_fan_rpm: !remove
+  # Optional: on during the unit's start-up minute after switching on, when it ignores speed and
+  # fireplace commands (a choice made then is sent when it ends).
+  starting_up:
+    name: "Starting up"
+    icon: "mdi:fan-clock"

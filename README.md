@@ -202,13 +202,14 @@ id(ilto).set_step(2);             // CASA layout: 0 Away, 1 Home, 2-4 Boost 30/6
 | Supply fan power, Extract fan power | sensor, % | 0 when the unit is off |
 | CO2, Humidity | sensor | Only with those options; scale unchecked |
 | Supply fan rpm, Extract fan rpm | sensor | Not reported by econo models |
-| Ventilation | select | Off, 1-5 or Fireplace: the unit's state, and how to change it. Right after switching on, the unit keeps its start speed for about a minute before a new speed takes effect (Supply / Extract fan power show when). Fireplace runs supply 100 %, extract 20 % (60 / 20 % on the tested Premium) for ~10 min to start a fire, then the unit returns to its speed |
+| Ventilation | select | Off, 1-5 or Fireplace: the unit's state, and how to change it. Switching on always starts at speed 3 (econo) and is followed by a start-up minute in which the unit does not reliably take speed and fireplace commands; a choice made while off or during that minute is sent when it ends, so the select shows 3 until then. Fireplace runs supply 100 %, extract 20 % (60 / 20 % on the tested Premium) for ~10 min to start a fire, then the unit returns to its speed |
 | Ventilation mode (`step_mode`) | select | CASA layout only, not in the package (see the ESP32 example): Away, Home, Boost 30 / 60 / 120 min, Boost - the panel's 3-step screen. Shows the unit's choice and sends the panel's command |
 | Boost time left (`boost_time`) | sensor, min | CASA layout only: minutes left of a timed boost, 0 otherwise. The unit reports only the boost's length, so the ESP counts from when the boost started; for a boost already running when the ESP started it is unknown |
 | Ventilation (`ventilation`) | switch | Optional, not in the package: the unit on / off, as the panel's main menu. Used by the ESP32 example for the CASA layout with the 3-step screen, where the speed select does not work |
 | Fireplace (`fireplace_mode`) | switch | Optional, not in the package: fireplace mode on / off, as the panel's Takkatoiminto / Lopeta. The unit ends it by itself after its set time (10 min by default). On the CASA layout supply 60 %, extract 20 % meanwhile; not sent while the unit is off |
 | Basic display (`basic_display`) | text sensor (diagnostic) | CASA layout only, not in the package: `Basic display 1` (3-step Away / Home / Boost) or `Basic display 2` (speeds 1-5), as the unit reports the panel's screen. Read only: change it on the panel |
 | Unit clock (`unit_clock`) | text sensor (diagnostic) | CASA layout only, not in the package: the unit's own weekday and time, e.g. `Fri 19:23` |
+| Starting up | binary sensor | Optional (add `starting_up:` with a name under `ilto_premium:`). On during that start-up minute, about 62 s on the tested econo. The CASA unit shows the same for about a minute after switching on, while its panel says it is starting |
 | Clock sync | switch (config) | On by default: set the unit's clock after boot and at 04:05 daily |
 | Sync clock now | button (config) | |
 | After-heating (`after_heating`) | binary sensor | CASA layout only, not in the package: the electric after-heater is heating, as the panel's orange blinking LED |
